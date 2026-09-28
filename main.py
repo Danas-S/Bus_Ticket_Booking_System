@@ -3,8 +3,9 @@
 import hashlib
 import sqlite3
 from datetime import date, timedelta
+from pathlib import Path
 
-from create_database import create_database
+from create_database import DB_PATH, ensure_database_exists
 
 # NOTE: This file is split into three layers:
 # 1) data/auth helpers, 2) print helpers, 3) menu controllers.
@@ -18,7 +19,7 @@ def hash_password(plain_text_password: str) -> str:
 
 
 # open sqlite connection for the booking database and return it to callers
-def open_connection(db_path: str = "flyonwheels.db") -> sqlite3.Connection:
+def open_connection(db_path: str | Path = DB_PATH) -> sqlite3.Connection:
     """Create and return a SQLite connection for the transport system database."""
     connection = sqlite3.connect(db_path)
     # NOTE: Row objects allow readable access like row["username"].
@@ -342,11 +343,10 @@ def home_menu(connection: sqlite3.Connection) -> None:
 
 
 # start the application by preparing data and running the home menu loop
-def main() -> None:
-    """Create/reset the database and launch the menu-driven booking program."""
-    # NOTE: Start with known baseline data so tests and demo are deterministic.
-    create_database()
-    connection = open_connection()
+def main(db_path: str | Path = DB_PATH) -> None:
+    """Initialize the database if needed and launch menus, preserving saved data."""
+    ensure_database_exists(db_path)
+    connection = open_connection(db_path)
     try:
         home_menu(connection)
     finally:

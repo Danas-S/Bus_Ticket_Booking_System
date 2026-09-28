@@ -3,9 +3,48 @@
 import hashlib
 import sqlite3
 from datetime import date, timedelta
+from pathlib import Path
 
 
-DB_PATH = "flyonwheels.db"
+DB_PATH = Path(__file__).resolve().with_name("flyonwheels.db")
+
+
+def ensure_database_exists(db_path: str | Path = DB_PATH) -> None:
+    """Initialize a missing/empty database, or validate it without resetting data.
+
+    Raise ValueError for an incompatible existing schema so user data is never
+    silently replaced. Resetting remains an explicit create_database() action.
+    """
+    connection = sqlite3.connect(db_path)
+    try:
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        if tables:
+            expected_columns = {
+                "user": {"id", "username", "password", "admin"},
+                "service": {"id", "name"},
+                "bus_model": {"id", "name", "seats"},
+                "run": {"id", "service_id", "run_date"},
+                "bus": {"id", "service_id", "bus_model_id", "schedule_type"},
+                "ticket": {"id", "user_id", "run_id", "number"},
+            }
+            for table, required in expected_columns.items():
+                columns = {
+                    row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')
+                }
+                if not required <= columns:
+                    raise ValueError(
+                        f"Incompatible database: check the {table} table. "
+                        "Back up your data before explicitly resetting it."
+                    )
+            return
+    finally:
+        connection.close()
+    create_database(db_path)
 
 # NOTE: This file contains both Part 1 (plural-table) and Part 2 (singular-table)
 # database setup paths so each assignment requirement remains demonstrable.
