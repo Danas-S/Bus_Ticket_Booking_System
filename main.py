@@ -1,21 +1,13 @@
 """Menu-driven transport booking application for Week 10 Part 2."""
 
-import hashlib
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
-from create_database import DB_PATH, ensure_database_exists
+from create_database import DB_PATH, RUN_DAYS, ensure_database_exists, hash_password
 
 # NOTE: This file is split into three layers:
 # 1) data/auth helpers, 2) print helpers, 3) menu controllers.
-
-
-# hash plain-text passwords so login checks use secure stored values
-
-def hash_password(plain_text_password: str) -> str:
-    """Return SHA-256 hash text for a plain password string."""
-    return hashlib.sha256(plain_text_password.encode("utf-8")).hexdigest()
 
 
 # open sqlite connection for the booking database and return it to callers
@@ -24,6 +16,7 @@ def open_connection(db_path: str | Path = DB_PATH) -> sqlite3.Connection:
     connection = sqlite3.connect(db_path)
     # NOTE: Row objects allow readable access like row["username"].
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
@@ -81,10 +74,10 @@ def create_service(connection: sqlite3.Connection, service_name: str) -> bool:
         # NOTE: Every new service is immediately usable for the next 7 days.
         run_rows = [
             (service_id, (start_day + timedelta(days=offset)).isoformat())
-            for offset in range(7)
+            for offset in range(RUN_DAYS)
         ]
         connection.executemany(
-            "INSERT INTO run (service_id, run_date) VALUES (?, ?)",
+            "INSERT INTO run (service_id, date) VALUES (?, ?)",
             run_rows,
         )
 
@@ -119,7 +112,7 @@ def list_future_runs(connection: sqlite3.Connection):
     query = """
         SELECT
             r.id AS run_id,
-            r.run_date,
+            r.date,
             s.name AS service_name,
             bm.seats - COALESCE(SUM(t.number), 0) AS available_seats
         FROM run r
@@ -127,14 +120,14 @@ def list_future_runs(connection: sqlite3.Connection):
         LEFT JOIN bus b
             ON b.service_id = r.service_id
             AND (
-                (b.schedule_type = 'weekend' AND CAST(strftime('%w', r.run_date) AS INTEGER) IN (0, 6))
-                OR (b.schedule_type = 'workday' AND CAST(strftime('%w', r.run_date) AS INTEGER) BETWEEN 1 AND 5)
+                (b.schedule_type = 'weekend' AND CAST(strftime('%w', r.date) AS INTEGER) IN (0, 6))
+                OR (b.schedule_type = 'workday' AND CAST(strftime('%w', r.date) AS INTEGER) BETWEEN 1 AND 5)
             )
         LEFT JOIN bus_model bm ON bm.id = b.bus_model_id
         LEFT JOIN ticket t ON t.run_id = r.id
-        WHERE r.run_date >= ?
-        GROUP BY r.id, r.run_date, s.name, bm.seats
-        ORDER BY r.run_date, s.name, r.id
+        WHERE r.date >= ?
+        GROUP BY r.id, r.date, s.name, bm.seats
+        ORDER BY r.date, s.name, r.id
     """
     # NOTE: This query computes dynamic availability: capacity - sold tickets.
     return connection.execute(query, (today_text,)).fetchall()
@@ -179,13 +172,13 @@ def list_user_tickets(connection: sqlite3.Connection, user_id: int):
         SELECT
             t.id AS ticket_id,
             t.number,
-            r.run_date,
+            r.date,
             s.name AS service_name
         FROM ticket t
         JOIN run r ON r.id = t.run_id
         JOIN service s ON s.id = r.service_id
         WHERE t.user_id = ?
-        ORDER BY r.run_date, t.id
+        ORDER BY r.date, t.id
     """
     return connection.execute(query, (user_id,)).fetchall()
 
@@ -208,7 +201,7 @@ def print_future_runs(runs) -> None:
         return
     for run_row in runs:
         print(
-            f"Run {run_row['run_id']}: {run_row['run_date']} | "
+            f"Run {run_row['run_id']}: {run_row['date']} | "
             f"{run_row['service_name']} | seats left: {run_row['available_seats']}"
         )
 
@@ -222,7 +215,7 @@ def print_user_tickets(ticket_rows) -> None:
     for ticket_row in ticket_rows:
         print(
             f"Ticket {ticket_row['ticket_id']}: {ticket_row['number']} seat(s) | "
-            f"{ticket_row['run_date']} | {ticket_row['service_name']}"
+            f"{ticket_row['date']} | {ticket_row['service_name']}"
         )
 
 

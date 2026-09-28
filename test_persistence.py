@@ -47,6 +47,26 @@ class TestPersistence(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_legacy_date_column_migrates_without_losing_tickets(self) -> None:
+        """Upgrade the old date spelling while preserving ids and foreign keys."""
+        create_database(self.db_path)
+        connection = main.open_connection(self.db_path)
+        try:
+            before = [tuple(row) for row in connection.execute("SELECT * FROM ticket")]
+            connection.execute("ALTER TABLE run RENAME COLUMN date TO run_date")
+            connection.commit()
+        finally:
+            connection.close()
+        ensure_database_exists(self.db_path)
+        connection = main.open_connection(self.db_path)
+        try:
+            self.assertIn("date", [row[1] for row in connection.execute("PRAGMA table_info(run)")])
+            self.assertEqual(before, [tuple(row) for row in connection.execute("SELECT * FROM ticket")])
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertIsNotNone(main.authenticate_user(connection, "Bob", "pqr123#!"))
+        finally:
+            connection.close()
+
     def test_unknown_schema_is_preserved(self) -> None:
         """Refuse an incompatible database instead of destroying its contents."""
         connection = sqlite3.connect(self.db_path)
