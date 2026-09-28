@@ -48,7 +48,6 @@ Run choices use the **displayed list position**. Enter a positive whole number o
 | `test_booking.py` | Isolated account, service, input, capacity and concurrent-booking tests. |
 | `test_persistence.py` | Isolated startup, migration and two-process restart tests. |
 | `flyonwheels.db` | Committed seed snapshot; explicit setup refreshes dates to the day it runs. |
-| `VIDEO_NOTES.md` | Before/fix/proof evidence and a nine-minute screencast outline. |
 | `bus_systemdiagram.jpg` | Original six-concept diagram photo; see the precise relationships below. |
 | `url_link.txt` | Existing screencast URL; update after recording the corrected application. |
 | `.gitignore` | Excludes generated Python bytecode, virtual environments and SQLite sidecars. |
