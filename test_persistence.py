@@ -1,6 +1,9 @@
 """Check that normal application startup preserves saved accounts and bookings."""
 
 import sqlite3
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,6 +84,47 @@ class TestPersistence(unittest.TestCase):
             )
         finally:
             connection.close()
+
+    def test_real_process_restart_preserves_account_service_and_booking(self) -> None:
+        """Run main.py twice, from another cwd, and verify the same saved records."""
+        project = Path(self.directory.name) / "project"
+        project.mkdir()
+        source = Path(__file__).resolve().parent
+        for name in ("main.py", "create_database.py", "user.py", "service.py", "run.py",
+                     "bus.py", "bus_model.py", "ticket.py"):
+            shutil.copy2(source / name, project / name)
+
+        def launch(inputs: list[str]) -> str:
+            """Execute the unmodified application in a separate Python process."""
+            result = subprocess.run(
+                [sys.executable, str(project / "main.py")],
+                cwd=self.directory.name,
+                input="\n".join(inputs) + "\n",
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+        first = launch([
+            "1", "Bob", "pqr123#!", "2", "A persistent route, 9am", "3",
+            "2", "RestartCustomer", "password", "1", "RestartCustomer", "password",
+            "2", "1", "2", "", "4", "3",
+        ])
+        self.assertIn("Booking confirmed!", first)
+        second = launch(["1", "RestartCustomer", "password", "3", "4", "3"])
+        self.assertIn("Welcome back, RestartCustomer!", second)
+        self.assertIn("2 seat(s)", second)
+        self.assertIn("A persistent route, 9am", second)
+        connection = main.open_connection(project / "flyonwheels.db")
+        try:
+            user = main.authenticate_user(connection, "RestartCustomer", "password")
+            self.assertFalse(user.admin)
+            ticket, = main.list_user_tickets(connection, user.id)
+            self.assertEqual(ticket.ticket.number, 2)
+            self.assertEqual(ticket.service.name, "A persistent route, 9am")
+        finally:
+            connection.close()
+        self.assertFalse(self.db_path.exists(), "Launching from another cwd must not create a second DB")
 
 
 if __name__ == "__main__":
