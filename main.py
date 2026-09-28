@@ -67,7 +67,7 @@ def authenticate_user(
 def create_account(connection: sqlite3.Connection, username: str, password: str) -> bool:
     """Insert a non-admin user account and return True on success, else False."""
     cleaned_username = username.strip()
-    if not cleaned_username or not password:
+    if not cleaned_username or not password.strip():
         return False
 
     try:
@@ -78,6 +78,7 @@ def create_account(connection: sqlite3.Connection, username: str, password: str)
         connection.commit()
         return True
     except sqlite3.IntegrityError:
+        connection.rollback()
         return False
 
 
@@ -188,27 +189,37 @@ def buy_tickets(
     number_of_tickets: int,
     confirmation_text: str,
 ) -> str:
-    """Try to buy tickets and return result text for confirmed, cancelled, or invalid cases."""
-    if number_of_tickets <= 0:
+    """Validate and commit a seat quantity, returning a user-facing result.
+
+    Reserve the SQLite write transaction before rechecking availability so two
+    app instances cannot both sell the same remaining seats. Cancellation and
+    invalid input leave no ticket. The caller must finish any prior transaction.
+    """
+    if type(number_of_tickets) is not int or number_of_tickets <= 0:
         return "Invalid number of tickets."
-
-    runs = list_future_runs(connection)
-    target_run = next((details for details in runs if details.run.id == run_id), None)
-    if target_run is None:
-        return "Invalid run selection."
-
-    if target_run.available_seats < number_of_tickets:
-        return "Not enough seats available."
 
     if confirmation_text.strip().lower() == "esc":
         return "Booking cancelled."
+    if confirmation_text.strip():
+        return "Invalid confirmation. Press Enter to confirm or type 'esc' to cancel."
 
-    # NOTE: We store quantity in one row (`number`) for simpler ticket summaries.
-    connection.execute(
-        "INSERT INTO ticket (user_id, run_id, number) VALUES (?, ?, ?)",
-        (user_id, run_id, number_of_tickets),
-    )
-    connection.commit()
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            runs = list_future_runs(connection)
+            target_run = next((details for details in runs if details.run.id == run_id), None)
+            if target_run is None:
+                return "Invalid run selection."
+            if target_run.available_seats < number_of_tickets:
+                return "Not enough seats available."
+
+            # NOTE: Store quantity in one row (`number`) for ticket summaries.
+            connection.execute(
+                "INSERT INTO ticket (user_id, run_id, number) VALUES (?, ?, ?)",
+                (user_id, run_id, number_of_tickets),
+            )
+    except sqlite3.IntegrityError:
+        return "Invalid user or run selection."
     return "Booking confirmed!"
 
 
@@ -252,13 +263,13 @@ def print_services(services: list[Service]) -> None:
 
 # show future run options with availability so users can select booking targets
 def print_future_runs(runs: list[RunDetails]) -> None:
-    """Print dated runs, service names, assigned buses and remaining capacity."""
+    """Number runs by list position, matching the booking selection prompt."""
     if not runs:
         print("No future runs available.")
         return
-    for details in runs:
+    for position, details in enumerate(runs, start=1):
         print(
-            f"Run {details.run.id}: {details.run.date} | "
+            f"Run {position}: {details.run.date} | "
             f"{details.service.name} | seats left: {details.available_seats} | "
             f"Bus {details.bus.id}: model {details.bus_model.name} "
             f"({details.bus_model.seats} seats, {details.bus.schedule_type})"
@@ -295,7 +306,7 @@ def admin_menu(connection: sqlite3.Connection) -> None:
             if create_service(connection, service_name):
                 print(f"Service '{service_name}' created.")
             else:
-                print("Service could not be created.")
+                print("Service could not be created. Use a non-blank, unique name.")
         elif choice == "3":
             return
         else:
@@ -387,7 +398,7 @@ def home_menu(connection: sqlite3.Connection) -> None:
             if create_account(connection, username, password):
                 print(f"Account created for '{username}'.")
             else:
-                print("Account could not be created.")
+                print("Account could not be created. Use a unique username and non-blank credentials.")
         elif choice == "3":
             return
         else:
