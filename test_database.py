@@ -3,8 +3,10 @@
 # DEMO NOTE: Use this script live in the video to prove persistence state.
 
 import sqlite3
+from pathlib import Path
 from typing import List, Tuple
 
+from create_database import DB_PATH
 
 # prompt: list every user-defined table in the SQLite database
 
@@ -27,10 +29,11 @@ def get_table_data(connection: sqlite3.Connection, table_name: str) -> Tuple[Lis
     """Return column names and all rows from the given table."""
     cursor = connection.cursor()
     # PRAGMA table_info returns one row per column definition.
-    cursor.execute(f"PRAGMA table_info({table_name})")
+    quoted_name = '"' + table_name.replace('"', '""') + '"'
+    cursor.execute(f"PRAGMA table_info({quoted_name})")
     columns = [row[1] for row in cursor.fetchall()]
 
-    cursor.execute(f"SELECT * FROM {table_name}")
+    cursor.execute(f"SELECT * FROM {quoted_name}")
     rows = cursor.fetchall()
     return columns, rows
 
@@ -49,9 +52,9 @@ def print_table_dump(table_name: str, columns: List[str], rows: List[tuple]) -> 
 
 
 # prompt: open flyonwheels db and dump all tables to standard output
-def dump_database(db_path: str = "flyonwheels.db") -> None:
-    """Print all table data from flyonwheels.db."""
-    connection = sqlite3.connect(db_path)
+def dump_database(db_path: str | Path = DB_PATH) -> None:
+    """Print existing table data without creating or modifying the database."""
+    connection = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
         table_names = get_table_names(connection)
         if not table_names:

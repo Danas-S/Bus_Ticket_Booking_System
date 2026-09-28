@@ -1,4 +1,4 @@
-"""BusModel class mapped to the bus_models table."""
+"""BusModel class mapped to the bus_model table."""
 
 
 class BusModel:
@@ -6,8 +6,8 @@ class BusModel:
     # BusModel is referenced by Bus to define seat capacity.
     # NOTE: Seat capacity drives availability shown in customer run listings.
 
-    # initialize a bus model entity matching the bus_models table structure
-    def __init__(self, model_id: int, name: str, seats: int):
+    # initialize a bus model entity matching the bus_model table structure
+    def __init__(self, model_id: int, name: str, seats: int) -> None:
         """Store model identity, label, and seating capacity."""
         self.id = model_id
         self.name = name

@@ -1,47 +1,73 @@
 """Menu-driven transport booking application for Week 10 Part 2."""
 
-import hashlib
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 
-from create_database import create_database
+from create_database import DB_PATH, RUN_DAYS, ensure_database_exists, hash_password
+from bus import Bus
+from bus_model import BusModel
+from run import Run
+from service import Service
+from ticket import Ticket
+from user import User
 
 # NOTE: This file is split into three layers:
 # 1) data/auth helpers, 2) print helpers, 3) menu controllers.
 
 
-# hash plain-text passwords so login checks use secure stored values
+@dataclass
+class RunDetails:
+    """Group a dated run with its service, assigned bus, capacity and availability."""
 
-def hash_password(plain_text_password: str) -> str:
-    """Return SHA-256 hash text for a plain password string."""
-    return hashlib.sha256(plain_text_password.encode("utf-8")).hexdigest()
+    run: Run
+    service: Service
+    bus: Bus
+    bus_model: BusModel
+    available_seats: int
+
+
+@dataclass
+class TicketDetails:
+    """Group a booking with the run and service shown in ticket history."""
+
+    ticket: Ticket
+    run: Run
+    service: Service
 
 
 # open sqlite connection for the booking database and return it to callers
-def open_connection(db_path: str = "flyonwheels.db") -> sqlite3.Connection:
+def open_connection(db_path: str | Path = DB_PATH) -> sqlite3.Connection:
     """Create and return a SQLite connection for the transport system database."""
     connection = sqlite3.connect(db_path)
     # NOTE: Row objects allow readable access like row["username"].
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
 # validate login credentials against stored username and password hash
-def authenticate_user(connection: sqlite3.Connection, username: str, password: str):
-    """Return matching user row when credentials are valid, otherwise return None."""
+def authenticate_user(
+    connection: sqlite3.Connection, username: str, password: str
+) -> User | None:
+    """Return a User with its stored hash and role, or None for invalid credentials."""
     password_hash = hash_password(password)
     cursor = connection.execute(
-        "SELECT id, username, admin FROM user WHERE username = ? AND password = ?",
+        "SELECT id, username, password, admin FROM user WHERE username = ? AND password = ?",
         (username, password_hash),
     )
-    return cursor.fetchone()
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return User(row["id"], row["username"], row["password"], bool(row["admin"]))
 
 
 # create a regular customer account and return whether creation succeeded
 def create_account(connection: sqlite3.Connection, username: str, password: str) -> bool:
     """Insert a non-admin user account and return True on success, else False."""
     cleaned_username = username.strip()
-    if not cleaned_username or not password:
+    if not cleaned_username or not password.strip():
         return False
 
     try:
@@ -52,14 +78,15 @@ def create_account(connection: sqlite3.Connection, username: str, password: str)
         connection.commit()
         return True
     except sqlite3.IntegrityError:
+        connection.rollback()
         return False
 
 
 # fetch all services in a stable order for admin and user display screens
-def list_services(connection: sqlite3.Connection):
-    """Return all service rows ordered by id."""
+def list_services(connection: sqlite3.Connection) -> list[Service]:
+    """Return Service objects ordered by database id."""
     cursor = connection.execute("SELECT id, name FROM service ORDER BY id")
-    return cursor.fetchall()
+    return [Service(row["id"], row["name"]) for row in cursor.fetchall()]
 
 
 # create a new service and automatically generate its runs and bus assignments
@@ -80,10 +107,10 @@ def create_service(connection: sqlite3.Connection, service_name: str) -> bool:
         # NOTE: Every new service is immediately usable for the next 7 days.
         run_rows = [
             (service_id, (start_day + timedelta(days=offset)).isoformat())
-            for offset in range(7)
+            for offset in range(RUN_DAYS)
         ]
         connection.executemany(
-            "INSERT INTO run (service_id, run_date) VALUES (?, ?)",
+            "INSERT INTO run (service_id, date) VALUES (?, ?)",
             run_rows,
         )
 
@@ -112,31 +139,46 @@ def create_service(connection: sqlite3.Connection, service_name: str) -> bool:
 
 
 # list future runs with dynamic seat availability for customer booking choices
-def list_future_runs(connection: sqlite3.Connection):
-    """Return upcoming run rows with service text and available seats."""
+def list_future_runs(connection: sqlite3.Connection) -> list[RunDetails]:
+    """Return today's/upcoming runs with assigned buses and SQL seat totals."""
     today_text = date.today().isoformat()
     query = """
         SELECT
             r.id AS run_id,
-            r.run_date,
+            r.service_id,
+            r.date,
             s.name AS service_name,
+            b.id AS bus_id,
+            b.schedule_type,
+            bm.id AS model_id,
+            bm.name AS model_name,
+            bm.seats,
             bm.seats - COALESCE(SUM(t.number), 0) AS available_seats
         FROM run r
         JOIN service s ON s.id = r.service_id
-        LEFT JOIN bus b
+        JOIN bus b
             ON b.service_id = r.service_id
             AND (
-                (b.schedule_type = 'weekend' AND CAST(strftime('%w', r.run_date) AS INTEGER) IN (0, 6))
-                OR (b.schedule_type = 'workday' AND CAST(strftime('%w', r.run_date) AS INTEGER) BETWEEN 1 AND 5)
+                (b.schedule_type = 'weekend' AND CAST(strftime('%w', r.date) AS INTEGER) IN (0, 6))
+                OR (b.schedule_type = 'workday' AND CAST(strftime('%w', r.date) AS INTEGER) BETWEEN 1 AND 5)
             )
-        LEFT JOIN bus_model bm ON bm.id = b.bus_model_id
+        JOIN bus_model bm ON bm.id = b.bus_model_id
         LEFT JOIN ticket t ON t.run_id = r.id
-        WHERE r.run_date >= ?
-        GROUP BY r.id, r.run_date, s.name, bm.seats
-        ORDER BY r.run_date, s.name, r.id
+        WHERE r.date >= ?
+        GROUP BY r.id, b.id
+        ORDER BY r.date, s.name, r.id
     """
     # NOTE: This query computes dynamic availability: capacity - sold tickets.
-    return connection.execute(query, (today_text,)).fetchall()
+    return [
+        RunDetails(
+            Run(row["run_id"], row["service_id"], row["date"]),
+            Service(row["service_id"], row["service_name"]),
+            Bus(row["bus_id"], row["service_id"], row["model_id"], row["schedule_type"]),
+            BusModel(row["model_id"], row["model_name"], row["seats"]),
+            row["available_seats"],
+        )
+        for row in connection.execute(query, (today_text,))
+    ]
 
 
 # book tickets for a selected run while enforcing seat availability and user cancellation
@@ -147,81 +189,103 @@ def buy_tickets(
     number_of_tickets: int,
     confirmation_text: str,
 ) -> str:
-    """Try to buy tickets and return result text for confirmed, cancelled, or invalid cases."""
-    if number_of_tickets <= 0:
+    """Validate and commit a seat quantity, returning a user-facing result.
+
+    Reserve the SQLite write transaction before rechecking availability so two
+    app instances cannot both sell the same remaining seats. Cancellation and
+    invalid input leave no ticket. The caller must finish any prior transaction.
+    """
+    if type(number_of_tickets) is not int or number_of_tickets <= 0:
         return "Invalid number of tickets."
-
-    runs = list_future_runs(connection)
-    target_run = next((row for row in runs if row["run_id"] == run_id), None)
-    if target_run is None:
-        return "Invalid run selection."
-
-    if target_run["available_seats"] < number_of_tickets:
-        return "Not enough seats available."
 
     if confirmation_text.strip().lower() == "esc":
         return "Booking cancelled."
+    if confirmation_text.strip():
+        return "Invalid confirmation. Press Enter to confirm or type 'esc' to cancel."
 
-    # NOTE: We store quantity in one row (`number`) for simpler ticket summaries.
-    connection.execute(
-        "INSERT INTO ticket (user_id, run_id, number) VALUES (?, ?, ?)",
-        (user_id, run_id, number_of_tickets),
-    )
-    connection.commit()
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            runs = list_future_runs(connection)
+            target_run = next((details for details in runs if details.run.id == run_id), None)
+            if target_run is None:
+                return "Invalid run selection."
+            if target_run.available_seats < number_of_tickets:
+                return "Not enough seats available."
+
+            # NOTE: Store quantity in one row (`number`) for ticket summaries.
+            connection.execute(
+                "INSERT INTO ticket (user_id, run_id, number) VALUES (?, ?, ?)",
+                (user_id, run_id, number_of_tickets),
+            )
+    except sqlite3.IntegrityError:
+        return "Invalid user or run selection."
     return "Booking confirmed!"
 
 
 # retrieve all tickets bought by a user so they can view their booking history
-def list_user_tickets(connection: sqlite3.Connection, user_id: int):
-    """Return ticket rows for one user with service and run date details."""
+def list_user_tickets(connection: sqlite3.Connection, user_id: int) -> list[TicketDetails]:
+    """Return one user's Ticket objects with their dated Run and Service."""
     query = """
         SELECT
             t.id AS ticket_id,
+            t.user_id,
+            t.run_id,
             t.number,
-            r.run_date,
+            r.service_id,
+            r.date,
             s.name AS service_name
         FROM ticket t
         JOIN run r ON r.id = t.run_id
         JOIN service s ON s.id = r.service_id
         WHERE t.user_id = ?
-        ORDER BY r.run_date, t.id
+        ORDER BY r.date, t.id
     """
-    return connection.execute(query, (user_id,)).fetchall()
+    return [
+        TicketDetails(
+            Ticket(row["ticket_id"], row["user_id"], row["run_id"], row["number"]),
+            Run(row["run_id"], row["service_id"], row["date"]),
+            Service(row["service_id"], row["service_name"]),
+        )
+        for row in connection.execute(query, (user_id,))
+    ]
 
 
 # display service rows in a readable format for admin and customer menus
-def print_services(services) -> None:
+def print_services(services: list[Service]) -> None:
     """Print a numbered list of services or a fallback message when empty."""
     if not services:
         print("No services available.")
         return
     for service in services:
-        print(f"{service['id']}. {service['name']}")
+        print(f"{service.id}. {service.name}")
 
 
 # show future run options with availability so users can select booking targets
-def print_future_runs(runs) -> None:
-    """Print future run rows with run id, date, service name, and seats left."""
+def print_future_runs(runs: list[RunDetails]) -> None:
+    """Number runs by list position, matching the booking selection prompt."""
     if not runs:
         print("No future runs available.")
         return
-    for run_row in runs:
+    for position, details in enumerate(runs, start=1):
         print(
-            f"Run {run_row['run_id']}: {run_row['run_date']} | "
-            f"{run_row['service_name']} | seats left: {run_row['available_seats']}"
+            f"Run {position}: {details.run.date} | "
+            f"{details.service.name} | seats left: {details.available_seats} | "
+            f"Bus {details.bus.id}: model {details.bus_model.name} "
+            f"({details.bus_model.seats} seats, {details.bus.schedule_type})"
         )
 
 
 # print purchased tickets so customers can review what they already booked
-def print_user_tickets(ticket_rows) -> None:
-    """Print ticket history rows with quantity, date, and service name."""
-    if not ticket_rows:
+def print_user_tickets(tickets: list[TicketDetails]) -> None:
+    """Print each Ticket's quantity with its Run date and Service name."""
+    if not tickets:
         print("No tickets purchased yet.")
         return
-    for ticket_row in ticket_rows:
+    for details in tickets:
         print(
-            f"Ticket {ticket_row['ticket_id']}: {ticket_row['number']} seat(s) | "
-            f"{ticket_row['run_date']} | {ticket_row['service_name']}"
+            f"Ticket {details.ticket.id}: {details.ticket.number} seat(s) | "
+            f"{details.run.date} | {details.service.name}"
         )
 
 
@@ -242,7 +306,7 @@ def admin_menu(connection: sqlite3.Connection) -> None:
             if create_service(connection, service_name):
                 print(f"Service '{service_name}' created.")
             else:
-                print("Service could not be created.")
+                print("Service could not be created. Use a non-blank, unique name.")
         elif choice == "3":
             return
         else:
@@ -250,7 +314,7 @@ def admin_menu(connection: sqlite3.Connection) -> None:
 
 
 # run the logged-in customer menu loop for browsing runs and managing bookings
-def customer_menu(connection: sqlite3.Connection, user_row) -> None:
+def customer_menu(connection: sqlite3.Connection, user: User) -> None:
     """Show customer options until logout is selected."""
     while True:
         print("\n=== Customer Menu ===")
@@ -283,21 +347,21 @@ def customer_menu(connection: sqlite3.Connection, user_row) -> None:
 
             # NOTE: User input selects list position, then maps to real DB run_id.
             selected_run = runs[selected_index - 1]
-            run_id = selected_run["run_id"]
+            run_id = selected_run.run.id
 
             if ticket_count <= 0:
                 print("Invalid number of tickets.")
                 continue
 
-            if selected_run["available_seats"] < ticket_count:
+            if selected_run.available_seats < ticket_count:
                 print("Not enough seats available.")
                 continue
 
             confirm_text = input("Press Enter to confirm or type 'esc' to cancel: ")
-            result_message = buy_tickets(connection, user_row["id"], run_id, ticket_count, confirm_text)
+            result_message = buy_tickets(connection, user.id, run_id, ticket_count, confirm_text)
             print(result_message)
         elif choice == "3":
-            print_user_tickets(list_user_tickets(connection, user_row["id"]))
+            print_user_tickets(list_user_tickets(connection, user.id))
         elif choice == "4":
             return
         else:
@@ -317,24 +381,24 @@ def home_menu(connection: sqlite3.Connection) -> None:
         if choice == "1":
             username = input("Username: ").strip()
             password = input("Password: ")
-            user_row = authenticate_user(connection, username, password)
-            if user_row is None:
+            user = authenticate_user(connection, username, password)
+            if user is None:
                 print("Invalid username or password.")
                 continue
 
-            print(f"Welcome back, {user_row['username']}!")
+            print(f"Welcome back, {user.username}!")
             # DEMO NOTE: Role-based routing is controlled by the admin flag.
-            if user_row["admin"]:
+            if user.admin:
                 admin_menu(connection)
             else:
-                customer_menu(connection, user_row)
+                customer_menu(connection, user)
         elif choice == "2":
             username = input("Choose username: ").strip()
             password = input("Choose password: ")
             if create_account(connection, username, password):
                 print(f"Account created for '{username}'.")
             else:
-                print("Account could not be created.")
+                print("Account could not be created. Use a unique username and non-blank credentials.")
         elif choice == "3":
             return
         else:
@@ -342,11 +406,10 @@ def home_menu(connection: sqlite3.Connection) -> None:
 
 
 # start the application by preparing data and running the home menu loop
-def main() -> None:
-    """Create/reset the database and launch the menu-driven booking program."""
-    # NOTE: Start with known baseline data so tests and demo are deterministic.
-    create_database()
-    connection = open_connection()
+def main(db_path: str | Path = DB_PATH) -> None:
+    """Initialize the database if needed and launch menus, preserving saved data."""
+    ensure_database_exists(db_path)
+    connection = open_connection(db_path)
     try:
         home_menu(connection)
     finally:
