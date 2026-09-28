@@ -114,7 +114,7 @@ python -m unittest test_booking.py test_persistence.py -v
 
 Verified on Windows with Python 3.14.2: 2 lecturer tests and 18 total tests passed. Coverage includes account/service validation, all six model types, seven-run/two-bus creation, numeric menu errors, booking quantities, cancellation, capacity reduction, weekday/weekend selection, a last-seat race, past-run rejection, foreign keys and persistence across two actual processes. The unchanged lecturer scenario also checks the role menus.
 
-For a visible restart demonstration, create a customer and buy two seats, log out/exit, then launch `python main.py` again. Log in with that customer and view bought tickets. Do not run the reset script or lecturer tests between launches. See [video notes](VIDEO_NOTES.md) for the exact evidence.
+For a visible restart demonstration, create a customer and buy two seats, log out/exit, then launch `python main.py` again. Log in with that customer and view bought tickets. Do not run the reset script or lecturer tests between launches.
 
 ## Scope and submission notes
 
