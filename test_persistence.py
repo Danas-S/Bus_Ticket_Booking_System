@@ -28,7 +28,7 @@ class TestPersistence(unittest.TestCase):
             user = main.authenticate_user(connection, "RestartCustomer", "test-password")
             run = main.list_future_runs(connection)[0]
             self.assertEqual(
-                main.buy_tickets(connection, user["id"], run["run_id"], 2, ""),
+                main.buy_tickets(connection, user.id, run.run.id, 2, ""),
                 "Booking confirmed!",
             )
         finally:
@@ -41,9 +41,9 @@ class TestPersistence(unittest.TestCase):
         try:
             user = main.authenticate_user(connection, "RestartCustomer", "test-password")
             self.assertIsNotNone(user)
-            tickets = main.list_user_tickets(connection, user["id"])
+            tickets = main.list_user_tickets(connection, user.id)
             self.assertEqual(len(tickets), 1)
-            self.assertEqual(tickets[0]["number"], 2)
+            self.assertEqual(tickets[0].ticket.number, 2)
         finally:
             connection.close()
 
